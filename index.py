@@ -1,87 +1,76 @@
-import os
-import random
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+# أضف هذا المتغير لتخزين الأصوات
+votes_count = {}
+voted_players = []
 
-app = Flask(__name__)
-
-# بيانات البوت والمطور
-TOKEN = "8572686550:AAGzwx3rmEMXrSXAySuD8oUgU1G2LnKmKQM"
-DEVELOPER_USERNAME = "H0_Om"  # يوزرك المطور
-
-application = Application.builder().token(TOKEN).build()
-players_list = {}
-
-# دالة للتحقق هل المستخدم هو المطور
-def is_developer(user):
-    return user.username == DEVELOPER_USERNAME
-
-async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    players_list.clear()
-    
-    # رسالة الترحيب مع التحقق من المطور
-    welcome_text = "🎮 **لعبة المافيا بدأت!**"
-    if is_developer(update.effective_user):
-        welcome_text += "\n\n⚠️ **أهلاً بالمطور! لديك صلاحيات التحكم الكامل.**"
-
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("انضمام للعبة ✅", callback_data="join")]
-        ])
-    )
-
-async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_voting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user = query.from_user
     
-    if user.id not in players_list:
-        players_list[user.id] = user.first_name
-        await query.message.reply_text(f"👤 انضم اللاعب: {user.first_name}")
-
-    # لوحة تحكم المطور (تظهر فقط لك)
-    if is_developer(user) and len(players_list) >= 1: # جعلتها 1 للتجربة فقط
-        await query.message.reply_text(
-            "🛠 **لوحة تحكم المطور:**",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎲 توزيع الأدوار الآن", callback_data="distribute")],
-                [InlineKeyboardButton("❌ إنهاء اللعبة فوراً", callback_data="reset_game")]
-            ])
-        )
-    await query.answer()
-
-async def handle_dev_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-
-    # التأكد أن من يضغط على أزرار التحكم هو المطور حصراً
-    if not is_developer(user):
-        await query.answer("عذراً، هذه الصلاحية للمطور @H0_Om فقط! 🚫", show_alert=True)
+    # التأكد أن المطور هو من يبدأ التصويت أو النظام تلقائياً
+    if not is_developer(query.from_user):
+        await query.answer("هذا الأمر للمطور فقط حالياً! 🛡️", show_alert=True)
         return
 
-    if query.data == "reset_game":
-        players_list.clear()
-        await query.edit_message_text("🔄 تم إنهاء اللعبة وتصفير القائمة بواسطة المطور.")
+    votes_count.clear()
+    voted_players.clear()
+
+    # إنشاء أزرار بأسماء جميع اللاعبين المنضمين
+    keyboard = []
+    for uid, name in players_list.items():
+        keyboard.append([InlineKeyboardButton(f"التصويت ضد {name} 💀", callback_data=f"v_{uid}")])
     
-    elif query.data == "distribute":
-        if len(players_list) < 2: # للتجربة وضعتها 2، في الحقيقة تحتاج أكثر
-            await query.answer("نحتاج لاعبين أكثر للتوزيع!", show_alert=True)
-            return
-        
-        # كود التوزيع (نفس السابق)
-        await query.message.reply_text("⏳ جاري توزيع الأدوار سراً...")
-        # ... (منطق التوزيع)
-        await query.answer("تم التوزيع!")
+    await query.message.reply_text(
+        "📢 **بدأ وقت التصويت العام!**\n\nتحدثوا في المجموعة وقرروا من هو المافيا، ثم اضغط على الاسم أدناه لإقصائه.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    await query.answer()
 
-# المعالجات
-application.add_handler(CommandHandler("start", start_game))
-application.add_handler(CallbackQueryHandler(handle_join, pattern="join"))
-application.add_handler(CallbackQueryHandler(handle_dev_actions, pattern="^(distribute|reset_game)$"))
+async def register_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    voter_id = query.from_user.id
+    target_id = query.data.split("_")[1] # استخراج ID الشخص المستهدف
 
-@app.route('/', methods=['POST'])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.initialize()
-    await application.process_update(update)
-    return "ok", 200
+    # منع التصويت المكرر
+    if voter_id in voted_players:
+        await query.answer("لقد صوتّ بالفعل! لا يمكنك التلاعب بالأصوات. 🚫", show_alert=True)
+        return
+
+    # تسجيل الصوت
+    target_id = int(target_id)
+    votes_count[target_id] = votes_count.get(target_id, 0) + 1
+    voted_players.append(voter_id)
+
+    await query.answer(f"تم تسجيل صوتك ضد {players_list[target_id]} ✅")
+
+    # إذا صوت الجميع، نعلن النتيجة (أو يمكن للمطور إنهاء التصويت يدوياً)
+    if len(voted_players) >= len(players_list):
+        await finish_voting(query, context)
+
+async def finish_voting(query, context):
+    if not votes_count:
+        await query.message.reply_text("🏁 انتهى الوقت ولم يصوت أحد!")
+        return
+
+    # معرفة من حصل على أعلى أصوات
+    winner_id = max(votes_count, key=votes_count.get)
+    winner_name = players_list[winner_id]
+    
+    await query.message.reply_text(
+        f"🏁 **انتهى التصويت!**\n\nالضحية هي: **{winner_name}** 💀\nبمجموع أصوات: {votes_count[winner_id]}"
+    )
+    
+    # إخراج اللاعب من القائمة
+    del players_list[winner_id]
+    
+    # إعطاء المطور خيار بدء جولة جديدة أو إنهاء اللعبة
+    if is_developer(query.from_user):
+        await query.message.reply_text(
+            "🛠 **تحكم المطور:**",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("جولة تصويت جديدة 🔄", callback_data="start_vote")],
+                [InlineKeyboardButton("إنهاء اللعبة 🔚", callback_data="reset_game")]
+            ])
+        )
+
+# تحديث المعالجات (Handlers) في نهاية الملف
+application.add_handler(CallbackQueryHandler(start_voting, pattern="start_vote"))
+application.add_handler(CallbackQueryHandler(register_vote, pattern="^v_"))
