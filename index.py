@@ -1,57 +1,45 @@
-import asyncio
-import random
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-
-app = Flask(__name__)
-
-TOKEN = "8572686550:AAGzwx3rmEMXrSXAySuD8oUgU1G2LnKmKQM"
-DEV_USER = "H0_Om"
-
-application = Application.builder().token(TOKEN).build()
-players = {} # لتخزين اللاعبين المنضمين
-
-async def start(update: Update, context):
-    user = update.effective_user
-    text = f"🕵️ أهلاً بك يا {user.first_name} في لعبة المافيا!"
-    if user.username == DEV_USER:
-        text += "\n\n🛠 **أهلاً بالمطور @H0_Om، البوت تحت سيطرتك.**"
-    
-    keyboard = [[InlineKeyboardButton("انضمام للعبة ✅", callback_data="join")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
 async def handle_callback(update: Update, context):
     query = update.callback_query
     user = query.from_user
     
+    # 1. منطق الانضمام
     if query.data == "join":
         if user.id not in players:
-            players[user.id] = user.first_name
+            players[user.id] = {"name": user.first_name, "username": user.username}
             await query.message.reply_text(f"👤 انضم اللاعب: {user.first_name}")
             
-            # لوحة تحكم المطور تظهر لك فقط عند انضمام أول لاعب
+            # إذا كان الشخص الذي انضم هو المطور @H0_Om، نظهر له زر البدء
             if user.username == DEV_USER:
-                dev_keyboard = [[InlineKeyboardButton("🎲 توزيع الأدوار", callback_data="deal")]]
-                await query.message.reply_text("🛠 لوحة تحكم المطور:", reply_markup=InlineKeyboardMarkup(dev_keyboard))
+                keyboard = [[InlineKeyboardButton("🚀 ابدأ اللعبة الآن", callback_data="start_game")]]
+                await query.message.reply_text(
+                    f"أهلاً مطور {user.first_name}، عندما يكتمل العدد اضغط على البدء:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        else:
+            await query.answer("أنت منضم بالفعل! ⚠️")
         await query.answer()
 
-@app.route('/', methods=['GET', 'POST'])
-def main():
-    if request.method == 'POST':
-        try:
-            update_data = request.get_json(force=True)
-            update = Update.de_json(update_data, application.bot)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            if not application.handlers:
-                application.add_handler(CommandHandler("start", start))
-                application.add_handler(CallbackQueryHandler(handle_callback))
-            
-            loop.run_until_complete(application.initialize())
-            loop.run_until_complete(application.process_update(update))
-            return "OK", 200
-        except Exception as e:
-            return str(e), 200
-    return "<h1>البوت مستعد يا @H0_Om</h1>"
+    # 2. منطق بدء اللعبة (للمطور فقط)
+    elif query.data == "start_game":
+        if user.username != DEV_USER:
+            await query.answer("عذراً، المطور @H0_Om هو الوحيد المخول ببدء اللعبة! 🚫", show_alert=True)
+            return
+
+        if len(players) < 3:
+            await query.answer("يجب انضمام 3 لاعبين على الأقل للبدء! 👥", show_alert=True)
+            return
+
+        # توزيع الأدوار
+        uids = list(players.keys())
+        roles = ["مافيا 🔪", "طبيب 💊", "محقق 🔍"] + ["مواطن 👨‍🌾"] * (len(uids) - 3)
+        random.shuffle(roles)
+
+        for i, uid in enumerate(uids):
+            role = roles[i]
+            try:
+                await context.bot.send_message(chat_id=uid, text=f"🕵️ دورك السري هو: {role}")
+            except:
+                pass 
+
+        await query.edit_message_text("✅ تم توزيع الأدوار سراً على جميع اللاعبين!\nبدأت اللعبة الآن.. تحدثوا في المجموعة.")
+        await query.answer()
